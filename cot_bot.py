@@ -1,6 +1,6 @@
 import requests
 
-TOKEN = "YOUR_BOT_TOKEN"
+TOKEN = "Y8898099074:AAFk4I-Aczdif2mmYjuagQqBUdcs1_kc7UU"
 CHAT_ID = "-1003835934177"
 
 URL = "https://www.cftc.gov/dea/newcot/f_disagg_txt_2024.txt"
