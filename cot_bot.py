@@ -24,12 +24,11 @@ import requests
 from requests.adapters import HTTPAdapter, Retry
 
 # ──────────────────────────────────────────────
-# CONFIG  (values injected via environment vars)
+# CONFIG  (values injected via environment vars / GitHub Secrets)
 # ──────────────────────────────────────────────
-TOKEN   = os.getenv("8898099074:AAFk4I-Aczdif2mmYjuagQqBUdcs1_kc7UU", "")
-CHAT_ID = os.getenv("1003835934177", "")
+TOKEN   = os.getenv("8898099074:AAG7DfuQuG7YmUl5KB-MFYeH5BqKEyJg4Wo", "")
+CHAT_ID = os.getenv("-1003835934177", "")
 
-# CFTC Disaggregated COT — current year (TXT format)
 CURRENT_YEAR = datetime.now(timezone.utc).year
 COT_URL = f"https://www.cftc.gov/dea/newcot/f_disagg_txt_{CURRENT_YEAR}.txt"
 
@@ -65,8 +64,6 @@ SESSION = _make_session()
 # TELEGRAM
 # ──────────────────────────────────────────────
 def send(text: str, parse_mode: str = "HTML") -> bool:
-    """Send a message to the configured Telegram chat.
-    Returns True on success, False otherwise."""
     if not TOKEN or not CHAT_ID:
         log.error("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set.")
         return False
@@ -94,7 +91,6 @@ def send_error(context: str, exc: Optional[Exception] = None) -> None:
 # DATA LOADING
 # ──────────────────────────────────────────────
 def load_cot_data() -> list[str]:
-    """Download the CFTC COT file and return it as a list of lines."""
     log.info("Fetching COT data from: %s", COT_URL)
     try:
         r = SESSION.get(COT_URL, timeout=30)
@@ -109,7 +105,6 @@ def load_cot_data() -> list[str]:
 # PARSING
 # ──────────────────────────────────────────────
 def extract_gold_block(lines: list[str]) -> list[str]:
-    """Extract rows belonging to the GOLD - COMMODITY EXCHANGE section."""
     block: list[str] = []
     capturing = False
     for line in lines:
@@ -117,7 +112,6 @@ def extract_gold_block(lines: list[str]) -> list[str]:
         if not capturing and "GOLD" in upper and "COMMODITY EXCHANGE" in upper:
             capturing = True
         if capturing:
-            # Stop at the next commodity (SILVER or blank header line for new market)
             if block and "SILVER" in upper:
                 break
             block.append(line)
@@ -127,30 +121,20 @@ def extract_gold_block(lines: list[str]) -> list[str]:
     return block
 
 def _extract_numbers(line: str) -> list[int]:
-    """Return all integers found in a line (strips commas)."""
     return [int(n.replace(",", "")) for n in re.findall(r"[\d,]+", line)]
 
 def parse_managed_money(block: list[str]) -> tuple[list[int], list[int], list[str]]:
-    """
-    Parse Managed Money Long/Short from each report line in the block.
-    Returns (longs, shorts, report_dates).
-    The COT disaggregated format has columns roughly:
-      ... MM_Long, MM_Short, MM_Spreading ...
-    We take the first two large numbers after the 'Managed Money' marker.
-    """
-    longs:   list[int] = []
-    shorts:  list[int] = []
-    dates:   list[str] = []
+    longs:  list[int] = []
+    shorts: list[int] = []
+    dates:  list[str] = []
 
-    # Also grab dates from lines that look like report headers (contain a date pattern)
     date_pattern = re.compile(r"\b(\d{1,2}/\d{1,2}/\d{4})\b")
-
     current_date: str = ""
+
     for line in block:
         dm = date_pattern.search(line)
         if dm:
             current_date = dm.group(1)
-
         if "Managed Money" in line:
             nums = _extract_numbers(line)
             if len(nums) >= 2:
@@ -165,14 +149,12 @@ def parse_managed_money(block: list[str]) -> tuple[list[int], list[int], list[st
 # ANALYSIS
 # ──────────────────────────────────────────────
 def compute_metrics(longs: list[int], shorts: list[int]) -> dict:
-    """Compute net positioning, weekly change, and 4-week trend."""
     nets = [l - s for l, s in zip(longs, shorts)]
 
-    net_now   = nets[-1]
-    net_prev  = nets[-2] if len(nets) > 1 else net_now
-    delta     = net_now - net_prev
+    net_now  = nets[-1]
+    net_prev = nets[-2] if len(nets) > 1 else net_now
+    delta    = net_now - net_prev
 
-    # 4-week cumulative trend (sum of weekly changes over last 4 weeks)
     if len(nets) >= 5:
         trend_4w = sum(nets[i] - nets[i - 1] for i in range(-4, 0))
     elif len(nets) > 1:
@@ -180,25 +162,23 @@ def compute_metrics(longs: list[int], shorts: list[int]) -> dict:
     else:
         trend_4w = 0
 
-    # Long/short ratio
-    total = longs[-1] + shorts[-1]
+    total     = longs[-1] + shorts[-1]
     long_pct  = (longs[-1]  / total * 100) if total else 50.0
     short_pct = (shorts[-1] / total * 100) if total else 50.0
 
     return {
-        "net_now":    net_now,
-        "net_prev":   net_prev,
-        "delta":      delta,
-        "trend_4w":   trend_4w,
-        "long_now":   longs[-1],
-        "short_now":  shorts[-1],
-        "long_pct":   long_pct,
-        "short_pct":  short_pct,
-        "history":    nets,
+        "net_now":   net_now,
+        "net_prev":  net_prev,
+        "delta":     delta,
+        "trend_4w":  trend_4w,
+        "long_now":  longs[-1],
+        "short_now": shorts[-1],
+        "long_pct":  long_pct,
+        "short_pct": short_pct,
+        "history":   nets,
     }
 
 def get_bias(metrics: dict) -> tuple[str, str]:
-    """Return (emoji_bias_label, detail_string)."""
     net   = metrics["net_now"]
     delta = metrics["delta"]
     trend = metrics["trend_4w"]
@@ -219,7 +199,6 @@ def get_bias(metrics: dict) -> tuple[str, str]:
         return "🟡 NEUTRAL / MIXED", "No clear directional conviction"
 
 def mini_sparkline(nets: list[int], n: int = 6) -> str:
-    """Render a tiny text sparkline from recent net values."""
     bars = " ▁▂▃▄▅▆▇█"
     recent = nets[-n:]
     if len(recent) < 2:
@@ -229,7 +208,6 @@ def mini_sparkline(nets: list[int], n: int = 6) -> str:
     return "".join(bars[round((v - lo) / spread * (len(bars) - 1))] for v in recent)
 
 def format_number(n: int) -> str:
-    """Format large numbers with commas and sign."""
     sign = "+" if n > 0 else ""
     return f"{sign}{n:,}"
 
@@ -239,11 +217,10 @@ def format_number(n: int) -> str:
 def build_message(metrics: dict, report_date: str) -> str:
     bias_label, bias_detail = get_bias(metrics)
     spark = mini_sparkline(metrics["history"])
-
     arrow_delta = "▲" if metrics["delta"] > 0 else ("▼" if metrics["delta"] < 0 else "—")
     arrow_trend = "▲" if metrics["trend_4w"] > 0 else ("▼" if metrics["trend_4w"] < 0 else "—")
 
-    msg = (
+    return (
         f"📊 <b>Mental Pips Club — GOLD COT Report</b>\n"
         f"<i>COMEX Gold Futures | Report Date: {report_date}</i>\n"
         f"{'─' * 32}\n\n"
@@ -261,7 +238,6 @@ def build_message(metrics: dict, report_date: str) -> str:
         f"{'─' * 32}\n"
         f"<i>Source: CFTC Disaggregated COT</i>"
     )
-    return msg
 
 # ──────────────────────────────────────────────
 # MAIN
@@ -302,8 +278,7 @@ def run() -> None:
     message     = build_message(metrics, report_date)
 
     log.info("Sending report to Telegram...")
-    success = send(message)
-    if not success:
+    if not send(message):
         sys.exit(1)
 
     log.info("=== Done ===")
