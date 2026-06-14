@@ -1,6 +1,5 @@
 import requests
 import pandas as pd
-from io import StringIO
 
 TOKEN = "YOUR_BOT_TOKEN"
 CHAT_ID = "-1003835934177"
@@ -13,70 +12,106 @@ def send(msg):
         data={"chat_id": CHAT_ID, "text": msg}
     )
 
-def load_data():
-    text = requests.get(URL).text
-    return text.split("\n")
+def get_data():
+    text = requests.get(URL).text.split("\n")
+    return text
 
-def find_gold_section(lines):
+def extract_gold_block(lines):
     """
-    Extract Gold COMEX Disaggregated rows
+    Extract only Gold COMEX section properly
     """
-
-    gold_rows = []
+    capture = False
+    gold_block = []
 
     for line in lines:
-        if "GOLD" in line and "COMEX" in line:
-            gold_rows.append(line)
+        if "GOLD - COMMODITY EXCHANGE INC." in line:
+            capture = True
 
-    return gold_rows
+        if capture:
+            gold_block.append(line)
+
+        if capture and line.strip() == "":
+            break
+
+    return gold_block
+
+def parse_numbers(block):
+    """
+    Extract numeric values from structured CFTC lines
+    """
+
+    longs = []
+    shorts = []
+
+    for line in block:
+        if "Managed Money" in line:
+            parts = line.split()
+
+            nums = [p for p in parts if p.replace(",", "").isdigit()]
+
+            if len(nums) >= 2:
+                longs.append(int(nums[-2].replace(",", "")))
+                shorts.append(int(nums[-1].replace(",", "")))
+
+    return longs, shorts
 
 def build_report():
 
-    lines = load_data()
-    gold = find_gold_section(lines)
+    lines = get_data()
+    gold_block = extract_gold_block(lines)
 
-    # Since CFTC format is complex fixed-width,
-    # we focus on signal logic framework first
+    longs, shorts = parse_numbers(gold_block)
 
-    net_long_proxy = len([x for x in gold if "Producer" in x or "Swap" in x])
-    net_short_proxy = len([x for x in gold if "Money" in x])
+    if not longs or not shorts:
+        return "⚠️ Data parsing failed — CFTC format may have changed"
 
-    net_score = net_long_proxy - net_short_proxy
+    net = longs[-1] - shorts[-1]
 
-    if net_score > 0:
-        bias = "🟢 Bullish"
-    elif net_score < 0:
-        bias = "🔴 Bearish"
+    delta = (net - (longs[-2] - shorts[-2])) if len(longs) > 1 else 0
+
+    # Trend strength
+    trend = sum([(longs[i] - shorts[i]) for i in range(len(longs))])
+
+    # Bias logic
+    score = net + delta + trend
+
+    if score > 100000:
+        bias = "🟢 STRONG BULLISH"
+    elif score > 0:
+        bias = "🟢 BULLISH"
+    elif score < -100000:
+        bias = "🔴 STRONG BEARISH"
+    elif score < 0:
+        bias = "🔴 BEARISH"
     else:
-        bias = "🟡 Neutral"
+        bias = "🟡 NEUTRAL"
 
     msg = f"""
-📊 Mental Pips Club - GOLD COT ENGINE v2
+📊 Mental Pips Club - GOLD COT ENGINE v3
 
 ━━━━━━━━━━━━━━━━━━
-🟡 GOLD COMEX POSITIONING
+🟡 REAL INSTITUTIONAL FLOW
 ━━━━━━━━━━━━━━━━━━
 
-Net Proxy Score: {net_score}
-
-Managed Money Flow:
-- Long Pressure: {net_long_proxy}
-- Short Pressure: {net_short_proxy}
+Net Position: {net}
+Weekly Change: {delta}
+Trend Score: {trend}
 
 ━━━━━━━━━━━━━━━━━━
-📈 BIAS SIGNAL
+📈 BIAS RESULT
 ━━━━━━━━━━━━━━━━━━
 
 {bias}
 
+Confidence Score: {min(100, abs(score)//10000)}
+
 ━━━━━━━━━━━━━━━━━━
-🧠 NOTE
+🧠 INTERPRETATION
 ━━━━━━━━━━━━━━━━━━
 
-This is v2 engine:
-✔ Weekly automation active
-✔ Signal generation active
-⚠ Next upgrade = exact numeric parsing
+- Based on Managed Money positioning
+- Includes weekly momentum
+- Includes multi-week trend pressure
 
 ━━━━━━━━━━━━━━━━━━
 """
