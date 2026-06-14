@@ -3,8 +3,7 @@ Mental Pips Club — GOLD COT Telegram Bot
 ==========================================
 Scrapes CFTC Futures-Only COT report for Gold (COMEX)
 from https://www.cftc.gov/dea/futures/deacmxsf.htm
-Parses Non-Commercial Long/Short positions and sends
-a formatted weekly report to a Telegram chat.
+Sends a table-formatted weekly report to Telegram.
 
 GitHub Secrets required:
   - TELEGRAM_BOT_TOKEN
@@ -95,20 +94,18 @@ def load_page() -> str:
         raise RuntimeError(f"Could not fetch COT page: {exc}") from exc
 
 # ──────────────────────────────────────────────
-# PARSING — extract Gold block from HTML/text
+# PARSING
 # ──────────────────────────────────────────────
 def extract_gold_block(html: str) -> str:
-    """Find the GOLD - COMMODITY EXCHANGE section."""
-    # Strip HTML tags to get plain text
     text = re.sub(r"<[^>]+>", " ", html)
     text = re.sub(r"&nbsp;", " ", text)
     text = re.sub(r"\s+", " ", text)
-
-    # Find Gold section
-    match = re.search(r"GOLD\s*[-–]\s*COMMODITY EXCHANGE INC\.(.+?)(?=\w+\s*[-–]\s*COMMODITY|\Z)", text, re.DOTALL | re.IGNORECASE)
+    match = re.search(
+        r"GOLD\s*[-–]\s*COMMODITY EXCHANGE INC\.(.+?)(?=\w+\s*[-–]\s*COMMODITY|\Z)",
+        text, re.DOTALL | re.IGNORECASE
+    )
     if not match:
-        raise ValueError("Gold section not found. CFTC may have changed their format.")
-
+        raise ValueError("Gold section not found.")
     block = match.group(0)
     log.info("Gold block found (%d chars).", len(block))
     return block
@@ -117,81 +114,81 @@ def parse_report_date(block: str) -> str:
     m = re.search(r"AS OF\s+(\d{2}/\d{2}/\d{2,4})", block, re.IGNORECASE)
     return m.group(1) if m else "Unknown"
 
-def extract_all_numbers(block: str) -> list[int]:
-    """Extract all integers from the block."""
-    raw = re.findall(r"-?[\d,]+", block)
-    results = []
-    for n in raw:
-        try:
-            results.append(int(n.replace(",", "")))
-        except ValueError:
-            continue
-    return results
-
 def parse_positions(block: str) -> dict:
-    """
-    Parse the COMMITMENTS row:
-    NON-COMMERCIAL: LONG | SHORT | SPREADS
-    COMMERCIAL:     LONG | SHORT
-    TOTAL:          LONG | SHORT
-    NONREPORTABLE:  LONG | SHORT
-
-    Also parse CHANGES FROM row and OPEN INTEREST.
-    """
-    # Open interest
     oi_match = re.search(r"OPEN INTEREST[:\s]+([\d,]+)", block, re.IGNORECASE)
     open_interest = int(oi_match.group(1).replace(",", "")) if oi_match else 0
 
-    # Get all number rows — COMMITMENTS row is the first big number group
-    # Pattern: find COMMITMENTS section numbers
     commit_match = re.search(
         r"COMMITMENTS\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)",
         block, re.IGNORECASE
     )
-
     if not commit_match:
         raise ValueError("Could not parse COMMITMENTS row.")
 
     nums = [int(x.replace(",", "")) for x in commit_match.groups()]
-    # Layout: NC_Long, NC_Short, NC_Spread, C_Long, C_Short, T_Long, T_Short, NR_Long, NR_Short
-    nc_long   = nums[0]
-    nc_short  = nums[1]
-    nc_spread = nums[2]
-    c_long    = nums[3]
-    c_short   = nums[4]
-    nr_long   = nums[7]
-    nr_short  = nums[8]
+    nc_long, nc_short, nc_spread = nums[0], nums[1], nums[2]
+    c_long,  c_short             = nums[3], nums[4]
+    nr_long, nr_short            = nums[7], nums[8]
 
-    # CHANGES row
     change_match = re.search(
         r"CHANGES FROM[^(]+\([^)]+\)\s+(-?[\d,]+)\s+(-?[\d,]+)\s+(-?[\d,]+)\s+(-?[\d,]+)\s+(-?[\d,]+)",
         block, re.IGNORECASE
     )
-    chg_nc_long  = 0
-    chg_nc_short = 0
+    chg_nc_long = chg_nc_short = chg_c_long = chg_c_short = 0
     if change_match:
         cg = [int(x.replace(",", "")) for x in change_match.groups()]
-        chg_nc_long  = cg[0]
-        chg_nc_short = cg[1]
+        chg_nc_long, chg_nc_short = cg[0], cg[1]
+        chg_c_long,  chg_c_short  = cg[2], cg[3]
+
+    # Percent of OI
+    pct_match = re.search(
+        r"PERCENT OF OPEN INTEREST[^:]*:\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)",
+        block, re.IGNORECASE
+    )
+    pct_nc_long = pct_nc_short = pct_c_long = pct_c_short = 0.0
+    if pct_match:
+        pg = [float(x) for x in pct_match.groups()]
+        pct_nc_long, pct_nc_short = pg[0], pg[1]
+        pct_c_long,  pct_c_short  = pg[3], pg[4]
+
+    # Traders count
+    traders_match = re.search(
+        r"NUMBER OF TRADERS[^(]+\([^)]+\)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)",
+        block, re.IGNORECASE
+    )
+    t_nc_long = t_nc_short = t_c_long = t_c_short = 0
+    if traders_match:
+        tg = [int(x) for x in traders_match.groups()]
+        t_nc_long, t_nc_short = tg[0], tg[1]
+        t_c_long,  t_c_short  = tg[3], tg[4]
 
     return {
         "open_interest": open_interest,
-        "nc_long":       nc_long,
-        "nc_short":      nc_short,
-        "nc_spread":     nc_spread,
-        "c_long":        c_long,
-        "c_short":       c_short,
-        "nr_long":       nr_long,
-        "nr_short":      nr_short,
-        "chg_nc_long":   chg_nc_long,
-        "chg_nc_short":  chg_nc_short,
-        "net":           nc_long - nc_short,
-        "chg_net":       chg_nc_long - chg_nc_short,
+        "nc_long":  nc_long,  "nc_short":  nc_short,  "nc_spread": nc_spread,
+        "c_long":   c_long,   "c_short":   c_short,
+        "nr_long":  nr_long,  "nr_short":  nr_short,
+        "chg_nc_long": chg_nc_long, "chg_nc_short": chg_nc_short,
+        "chg_c_long":  chg_c_long,  "chg_c_short":  chg_c_short,
+        "pct_nc_long": pct_nc_long, "pct_nc_short": pct_nc_short,
+        "pct_c_long":  pct_c_long,  "pct_c_short":  pct_c_short,
+        "t_nc_long": t_nc_long, "t_nc_short": t_nc_short,
+        "t_c_long":  t_c_long,  "t_c_short":  t_c_short,
+        "net":     nc_long - nc_short,
+        "chg_net": chg_nc_long - chg_nc_short,
     }
 
 # ──────────────────────────────────────────────
-# BIAS
+# HELPERS
 # ──────────────────────────────────────────────
+def fmt(n: int) -> str:
+    return f"{n:,}"
+
+def fmtc(n: int) -> str:
+    return f"+{n:,}" if n > 0 else f"{n:,}"
+
+def arrow(n: int) -> str:
+    return "▲" if n > 0 else ("▼" if n < 0 else "─")
+
 def get_bias(net: int, chg_net: int) -> tuple[str, str]:
     if net > 0 and chg_net > 0:
         return "🟢 BULLISH", "Net long & increasing"
@@ -202,49 +199,77 @@ def get_bias(net: int, chg_net: int) -> tuple[str, str]:
     elif net < 0 and chg_net > 0:
         return "🟡 BEARISH BUT RECOVERING", "Net short but covering"
     else:
-        return "🟡 NEUTRAL / MIXED", "No clear directional conviction"
-
-def format_num(n: int) -> str:
-    sign = "+" if n > 0 else ""
-    return f"{sign}{n:,}"
+        return "🟡 NEUTRAL / MIXED", "No clear conviction"
 
 # ──────────────────────────────────────────────
-# MESSAGE BUILDER
+# MESSAGE BUILDER — TABLE FORMAT
 # ──────────────────────────────────────────────
 def build_message(p: dict, report_date: str) -> str:
     bias_label, bias_detail = get_bias(p["net"], p["chg_net"])
 
-    total_nc = p["nc_long"] + p["nc_short"]
-    long_pct  = (p["nc_long"]  / total_nc * 100) if total_nc else 50.0
-    short_pct = (p["nc_short"] / total_nc * 100) if total_nc else 50.0
+    # Column widths
+    C0, C1, C2 = 16, 12, 12
+    div = "─" * (C0 + C1 + C2 + 4)
 
-    arrow_net = "▲" if p["chg_net"] > 0 else ("▼" if p["chg_net"] < 0 else "—")
-    arrow_l   = "▲" if p["chg_nc_long"]  > 0 else ("▼" if p["chg_nc_long"]  < 0 else "—")
-    arrow_s   = "▲" if p["chg_nc_short"] > 0 else ("▼" if p["chg_nc_short"] < 0 else "—")
+    def row(label, long_val, short_val):
+        return f"│{label:<{C0}}│{long_val:>{C1}}│{short_val:>{C2}}│"
 
-    return (
-        f"📊 <b>Mental Pips Club — GOLD COT Report</b>\n"
-        f"<i>COMEX Gold Futures Only | As of {report_date}</i>\n"
-        f"{'─' * 32}\n\n"
-        f"<b>Open Interest:</b> {p['open_interest']:,}\n\n"
-        f"<b>Non-Commercial Positioning</b>\n"
-        f"  🟩 Longs   : {p['nc_long']:>10,}  ({long_pct:.1f}%)  {arrow_l} {format_num(p['chg_nc_long'])}\n"
-        f"  🟥 Shorts  : {p['nc_short']:>10,}  ({short_pct:.1f}%)  {arrow_s} {format_num(p['chg_nc_short'])}\n"
-        f"  📊 Spreads : {p['nc_spread']:>10,}\n"
-        f"  ⚖️ Net     : {format_num(p['net']):>10}  {arrow_net} {format_num(p['chg_net'])}\n\n"
-        f"<b>Commercial</b>\n"
-        f"  🟩 Longs   : {p['c_long']:>10,}\n"
-        f"  🟥 Shorts  : {p['c_short']:>10,}\n\n"
-        f"<b>Non-Reportable</b>\n"
-        f"  🟩 Longs   : {p['nr_long']:>10,}\n"
-        f"  🟥 Shorts  : {p['nr_short']:>10,}\n\n"
-        f"{'─' * 32}\n"
+    table = "\n".join([
+        f"┌{'─'*C0}┬{'─'*C1}┬{'─'*C2}┐",
+        f"│{'':^{C0}}│{'LONG':^{C1}}│{'SHORT':^{C12}}│".replace("C12", str(C2)),
+        f"├{'─'*C0}┼{'─'*C1}┼{'─'*C2}┤",
+        row("NON-COMMERCIAL", fmt(p["nc_long"]), fmt(p["nc_short"])),
+        row("  Spreads", fmt(p["nc_spread"]), ""),
+        f"├{'─'*C0}┼{'─'*C1}┼{'─'*C2}┤",
+        row("COMMERCIAL", fmt(p["c_long"]), fmt(p["c_short"])),
+        f"├{'─'*C0}┼{'─'*C1}┼{'─'*C2}┤",
+        row("NON-REPORTABLE", fmt(p["nr_long"]), fmt(p["nr_short"])),
+        f"└{'─'*C0}┴{'─'*C1}┴{'─'*C2}┘",
+    ])
+
+    changes = "\n".join([
+        f"┌{'─'*C0}┬{'─'*C1}┬{'─'*C2}┐",
+        f"│{'WEEKLY CHANGE':^{C0+C1+C2+2}}│",
+        f"├{'─'*C0}┼{'─'*C1}┼{'─'*C2}┤",
+        row("NON-COMMERCIAL", fmtc(p["chg_nc_long"]), fmtc(p["chg_nc_short"])),
+        row("  Net Change", fmtc(p["chg_net"]), ""),
+        f"└{'─'*C0}┴{'─'*C1}┴{'─'*C2}┘",
+    ])
+
+    pct = "\n".join([
+        f"┌{'─'*C0}┬{'─'*C1}┬{'─'*C2}┐",
+        f"│{'% OF OPEN INT.':^{C0+C1+C2+2}}│",
+        f"├{'─'*C0}┼{'─'*C1}┼{'─'*C2}┤",
+        row("NON-COMMERCIAL", f"{p['pct_nc_long']}%", f"{p['pct_nc_short']}%"),
+        row("COMMERCIAL", f"{p['pct_c_long']}%", f"{p['pct_c_short']}%"),
+        f"└{'─'*C0}┴{'─'*C1}┴{'─'*C2}┘",
+    ])
+
+    traders = "\n".join([
+        f"┌{'─'*C0}┬{'─'*C1}┬{'─'*C2}┐",
+        f"│{'NO. OF TRADERS':^{C0+C1+C2+2}}│",
+        f"├{'─'*C0}┼{'─'*C1}┼{'─'*C2}┤",
+        row("NON-COMMERCIAL", fmt(p["t_nc_long"]), fmt(p["t_nc_short"])),
+        row("COMMERCIAL", fmt(p["t_c_long"]), fmt(p["t_c_short"])),
+        f"└{'─'*C0}┴{'─'*C1}┴{'─'*C2}┘",
+    ])
+
+    msg = (
+        f"📊 <b>Mental Pips Club — GOLD COT</b>\n"
+        f"<i>COMEX Futures Only | As of {report_date}</i>\n"
+        f"<i>Open Interest: {fmt(p['open_interest'])} contracts</i>\n\n"
+        f"<pre>{table}</pre>\n"
+        f"<pre>{changes}</pre>\n"
+        f"<pre>{pct}</pre>\n"
+        f"<pre>{traders}</pre>\n"
+        f"{'─'*32}\n"
+        f"<b>NET (Non-Comm):</b> {fmtc(p['net'])}  {arrow(p['chg_net'])} {fmtc(p['chg_net'])} wk\n"
         f"<b>BIAS: {bias_label}</b>\n"
         f"<i>{bias_detail}</i>\n"
-        f"{'─' * 32}\n"
-        f"<i>Source: CFTC Futures-Only COT Report</i>\n"
-        f"<i>{COT_URL}</i>"
+        f"{'─'*32}\n"
+        f"<i>src: CFTC Futures-Only COT</i>"
     )
+    return msg
 
 # ──────────────────────────────────────────────
 # MAIN
@@ -271,8 +296,7 @@ def run() -> None:
         send_error("Failed to parse Gold positions.", exc)
         sys.exit(1)
 
-    log.info("Parsed positions for date: %s", report_date)
-    log.info("Net Non-Commercial: %s", format_num(positions["net"]))
+    log.info("Report date: %s | Net: %s", report_date, fmtc(positions["net"]))
 
     message = build_message(positions, report_date)
 
