@@ -1,13 +1,12 @@
 name: Gold COT Report
 
 on:
-  # CFTC publishes every Friday afternoon (US Eastern).
-  # Run Saturday 22:00 UTC to ensure data is available.
   schedule:
-    - cron: "0 22 * * 6"
+    - cron: "0 22 * * 6"   # Every Saturday 22:00 UTC
+  workflow_dispatch:         # Manual trigger from Actions tab
 
-  # Allow manual trigger from the Actions tab at any time.
-  workflow_dispatch:
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   cot-report:
@@ -16,22 +15,18 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      # 1. Check out the repository
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2. Set up Python
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
 
-      # 3. Install dependencies
       - name: Install dependencies
-        run: pip install requests
+        run: pip install -r requirements.txt
 
-      # 4. Run the bot — secrets are injected as environment variables
       - name: Run COT Bot
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
