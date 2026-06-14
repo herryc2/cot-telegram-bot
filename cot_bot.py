@@ -6,25 +6,30 @@ CHAT_ID = "-1003835934177"
 
 URL = "https://www.cftc.gov/dea/newcot/deacot.txt"
 
+# ---------------------------
+# SEND MESSAGE TO TELEGRAM
+# ---------------------------
 def send(msg):
     requests.post(
         f"https://api.telegram.org/bot{TOKEN}/sendMessage",
         data={"chat_id": CHAT_ID, "text": msg}
     )
 
+# ---------------------------
+# LOAD DATA
+# ---------------------------
 def load_data():
     return requests.get(URL).text.split("\n")
 
+# ---------------------------
+# EXTRACT GOLD SECTION
+# ---------------------------
 def extract_gold(lines):
-    """
-    Clean extraction: isolate Gold COMEX block
-    """
-
     capture = False
     block = []
 
     for line in lines:
-        if "GOLD - COMMODITY EXCHANGE INC." in line:
+        if "GOLD - COMMODITY EXCHANGE INC" in line:
             capture = True
 
         if capture:
@@ -35,87 +40,81 @@ def extract_gold(lines):
 
     return block
 
-def parse_managed_money(block):
-    """
-    Extract ONLY Managed Money Long/Short correctly
-    """
-
-    longs = []
-    shorts = []
+# ---------------------------
+# PARSE MANAGED MONEY DATA
+# ---------------------------
+def parse_mm(block):
+    longs, shorts = [], []
 
     for line in block:
-
         if "Managed Money" in line:
 
             parts = line.split()
-
-            nums = []
-            for p in parts:
-                p_clean = p.replace(",", "")
-                if p_clean.isdigit():
-                    nums.append(int(p_clean))
+            nums = [p.replace(",", "") for p in parts if p.replace(",", "").isdigit()]
 
             if len(nums) >= 2:
-                longs.append(nums[-2])
-                shorts.append(nums[-1])
+                longs.append(int(nums[-2]))
+                shorts.append(int(nums[-1]))
 
     return longs, shorts
 
+# ---------------------------
+# CALCULATIONS
+# ---------------------------
 def compute(longs, shorts):
 
-    net_series = [l - s for l, s in zip(longs, shorts)]
+    net = [l - s for l, s in zip(longs, shorts)]
 
-    net_now = net_series[-1]
-    net_prev = net_series[-2]
+    net_now = net[-1]
+    net_prev = net[-2]
 
     delta = net_now - net_prev
 
-    # 4-week momentum
-    trend = 0
-    for i in range(1, len(net_series)):
-        trend += net_series[i] - net_series[i-1]
+    trend = sum([net[i] - net[i-1] for i in range(1, len(net))])
 
-    # Z-score
-    mean = sum(net_series) / len(net_series)
-    std = (sum([(x - mean) ** 2 for x in net_series]) / len(net_series)) ** 0.5
+    mean = sum(net) / len(net)
+    std = (sum([(x - mean) ** 2 for x in net]) / len(net)) ** 0.5
 
     z = (net_now - mean) / (std + 1e-9)
 
     return net_now, delta, trend, z
 
-def bias(z, net_now, trend):
+# ---------------------------
+# BIAS LOGIC (OPTION A SIMPLE)
+# ---------------------------
+def get_bias(net, trend, z):
 
     if z > 1.5:
-        return "🔴 EXTREME LONG (Reversal Risk)"
-    if z < -1.5:
-        return "🟢 EXTREME SHORT (Rebound Risk)"
-    if net_now > 0 and trend > 0:
-        return "🟢 STRONG BULLISH"
-    if net_now < 0 and trend < 0:
-        return "🔴 STRONG BEARISH"
-    if net_now > 0:
-        return "🟢 BULLISH"
-    if net_now < 0:
-        return "🔴 BEARISH"
-    return "🟡 NEUTRAL"
+        return "🔴 EXTREME LONG (Watch for Pullback)"
+    elif z < -1.5:
+        return "🟢 EXTREME SHORT (Watch for Bounce)"
+    elif net > 0 and trend > 0:
+        return "🟢 BULLISH BIAS"
+    elif net < 0 and trend < 0:
+        return "🔴 BEARISH BIAS"
+    else:
+        return "🟡 NEUTRAL / NO CLEAR EDGE"
 
+# ---------------------------
+# MAIN REPORT
+# ---------------------------
 def run():
 
     lines = load_data()
-    gold_block = extract_gold(lines)
+    gold = extract_gold(lines)
 
-    longs, shorts = parse_managed_money(gold_block)
+    longs, shorts = parse_mm(gold)
 
     if len(longs) < 2:
-        send("⚠️ COT data parsing failed — check CFTC format")
+        send("⚠️ COT data not available or format changed")
         return
 
     net, delta, trend, z = compute(longs, shorts)
 
-    signal = bias(z, net, trend)
+    bias = get_bias(net, trend, z)
 
     msg = f"""
-📊 Mental Pips Club - GOLD COT ENGINE (FINAL)
+📊 Mental Pips Club - GOLD COT WEEKLY BIAS
 
 ━━━━━━━━━━━━━━━━━━
 🟡 INSTITUTIONAL POSITIONING
@@ -124,27 +123,29 @@ def run():
 Net Position: {net}
 Weekly Change: {delta}
 Trend Strength: {trend}
-Z-Score: {round(z,2)}
+Z-Score: {round(z, 2)}
 
 ━━━━━━━━━━━━━━━━━━
-📈 MARKET BIAS
+📈 BIAS VIEW (NOT TRADE SIGNAL)
 ━━━━━━━━━━━━━━━━━━
 
-{signal}
+{bias}
 
 ━━━━━━━━━━━━━━━━━━
-🧠 NOTES
+🧠 HOW TO USE
 ━━━━━━━━━━━━━━━━━━
 
-✔ Managed Money positioning
-✔ Weekly momentum
-✔ 4-week trend analysis
-✔ Extreme detection model
+- Use this as weekly direction filter
+- Combine with price action
+- Do NOT enter blindly
 
 ━━━━━━━━━━━━━━━━━━
 """
 
     send(msg)
 
+# ---------------------------
+# EXECUTE
+# ---------------------------
 if __name__ == "__main__":
     run()
