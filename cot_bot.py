@@ -1,7 +1,7 @@
 import requests
 import pandas as pd
 
-TOKEN = "YOUR_BOT_TOKEN"
+TOKEN = "8898099074:AAFk4I-Aczdif2mmYjuagQqBUdcs1_kc7UU"
 CHAT_ID = "-1003835934177"
 
 URL = "https://www.cftc.gov/dea/newcot/deacot.txt"
