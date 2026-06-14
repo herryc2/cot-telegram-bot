@@ -24,13 +24,10 @@ import requests
 from requests.adapters import HTTPAdapter, Retry
 
 # ──────────────────────────────────────────────
-# CONFIG  (values injected via environment vars / GitHub Secrets)
+# CONFIG  (values injected via GitHub Secrets)
 # ──────────────────────────────────────────────
 TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-
-CURRENT_YEAR = datetime.now(timezone.utc).year
-COT_URL = f"https://www.cftc.gov/dea/newcot/f_disagg_txt_{CURRENT_YEAR}.txt"
 
 # ──────────────────────────────────────────────
 # LOGGING
@@ -59,6 +56,24 @@ def _make_session() -> requests.Session:
     return session
 
 SESSION = _make_session()
+
+# ──────────────────────────────────────────────
+# AUTO-DETECT CORRECT CFTC URL (tries current year, falls back to previous)
+# ──────────────────────────────────────────────
+def get_cot_url() -> str:
+    year = datetime.now(timezone.utc).year
+    for y in [year, year - 1]:
+        url = f"https://www.cftc.gov/dea/newcot/f_disagg_txt_{y}.txt"
+        try:
+            r = SESSION.head(url, timeout=10)
+            if r.status_code == 200:
+                log.info("Using COT URL: %s", url)
+                return url
+        except Exception:
+            continue
+    fallback = f"https://www.cftc.gov/dea/newcot/f_disagg_txt_{year - 1}.txt"
+    log.warning("Could not verify URL, falling back to: %s", fallback)
+    return fallback
 
 # ──────────────────────────────────────────────
 # TELEGRAM
@@ -91,9 +106,10 @@ def send_error(context: str, exc: Optional[Exception] = None) -> None:
 # DATA LOADING
 # ──────────────────────────────────────────────
 def load_cot_data() -> list[str]:
-    log.info("Fetching COT data from: %s", COT_URL)
+    cot_url = get_cot_url()
+    log.info("Fetching COT data from: %s", cot_url)
     try:
-        r = SESSION.get(COT_URL, timeout=30)
+        r = SESSION.get(cot_url, timeout=30)
         r.raise_for_status()
     except requests.RequestException as exc:
         raise RuntimeError(f"Could not download COT file: {exc}") from exc
@@ -266,8 +282,7 @@ def run() -> None:
     if not longs or not shorts:
         send_error(
             "No Managed Money rows found.\n"
-            "The CFTC may have changed their file format.\n"
-            f"URL tried: <code>{COT_URL}</code>"
+            "The CFTC may have changed their file format."
         )
         sys.exit(1)
 
