@@ -5,7 +5,7 @@ from io import StringIO
 TOKEN = "YOUR_BOT_TOKEN"
 CHAT_ID = "-1003835934177"
 
-URL = "https://www.cftc.gov/dea/newcot/f_disagg_txt_2024.txt"
+URL = "https://www.cftc.gov/dea/newcot/deacot2024.txt"
 
 def send(msg):
     requests.post(
@@ -13,128 +13,107 @@ def send(msg):
         data={"chat_id": CHAT_ID, "text": msg}
     )
 
-def load_table():
+def load():
     raw = requests.get(URL).text
+    return raw
 
-    # Convert fixed-width style into readable dataframe attempt
+def parse_table(raw):
+    """
+    Convert fixed width CFTC file into structured dataframe
+    """
+
     lines = raw.split("\n")
 
-    return lines
-
-def extract_gold_data(lines):
-    """
-    Proper structured extraction:
-    We isolate COMEX GOLD section safely
-    """
-
-    capture = False
-    block = []
+    data = []
 
     for line in lines:
+        if "GOLD" in line and "COMMODITY EXCHANGE INC" in line:
 
-        if "GOLD - COMMODITY EXCHANGE INC." in line:
-            capture = True
-
-        if capture:
-            block.append(line)
-
-        if capture and "SILVER" in line:
-            break
-
-    return block
-
-def parse_positions(block):
-    """
-    Extract Managed Money longs & shorts properly
-    """
-
-    longs = []
-    shorts = []
-
-    for line in block:
-
-        if "Managed Money" in line:
-
-            # split safely
             parts = line.split()
 
-            nums = []
-            for p in parts:
-                p_clean = p.replace(",", "")
-                if p_clean.isdigit():
-                    nums.append(int(p_clean))
+            nums = [p.replace(",", "") for p in parts if p.replace(",", "").isdigit()]
 
-            # CFTC format: last numbers usually long/short
-            if len(nums) >= 2:
-                longs.append(nums[-2])
-                shorts.append(nums[-1])
+            if len(nums) >= 4:
+                data.append({
+                    "long": int(nums[-2]),
+                    "short": int(nums[-1])
+                })
 
-    return longs, shorts
+    return pd.DataFrame(data)
 
-def build_report():
+def build_signal(df):
 
-    lines = load_table()
-    gold_block = extract_gold_data(lines)
+    if len(df) < 2:
+        return None
 
-    longs, shorts = parse_positions(gold_block)
+    df["net"] = df["long"] - df["short"]
 
-    if len(longs) < 2:
-        return "⚠️ Not enough data extracted — CFTC format mismatch"
-
-    net_now = longs[-1] - shorts[-1]
-    net_prev = longs[-2] - shorts[-2]
+    net_now = df["net"].iloc[-1]
+    net_prev = df["net"].iloc[-2]
 
     delta = net_now - net_prev
 
-    # Trend (last 4 weeks if available)
-    trend = 0
-    for i in range(1, len(longs)):
-        trend += (longs[i] - shorts[i]) - (longs[i-1] - shorts[i-1])
+    trend = df["net"].diff().rolling(3).mean().iloc[-1]
+
+    # Z-score (simple normalization)
+    z = (net_now - df["net"].mean()) / (df["net"].std() + 1e-9)
 
     score = net_now + delta + trend
 
-    # Bias engine
-    if score > 150000:
-        bias = "🟢 STRONG BULLISH (Institutional Accumulation)"
+    if z > 1.5:
+        bias = "🔴 EXTREME LONG (Reversal Risk)"
+    elif z < -1.5:
+        bias = "🟢 EXTREME SHORT (Rebound Risk)"
     elif score > 0:
         bias = "🟢 BULLISH"
-    elif score < -150000:
-        bias = "🔴 STRONG BEARISH (Institutional Distribution)"
     else:
-        bias = "🟡 NEUTRAL / CHOP"
+        bias = "🔴 BEARISH"
+
+    return net_now, delta, trend, z, bias
+
+def run():
+
+    raw = load()
+    df = parse_table(raw)
+
+    result = build_signal(df)
+
+    if not result:
+        send("⚠️ COT parsing failed — data structure mismatch")
+        return
+
+    net, delta, trend, z, bias = result
 
     msg = f"""
-📊 Mental Pips Club - GOLD COT ENGINE v4
+📊 Mental Pips Club - GOLD COT ENGINE v5 (QUANT)
 
 ━━━━━━━━━━━━━━━━━━
-🟡 INSTITUTIONAL POSITIONING (REAL)
+🟡 INSTITUTIONAL FLOW
 ━━━━━━━━━━━━━━━━━━
 
-Managed Money Net Now: {net_now}
+Net Position: {net}
 Weekly Change: {delta}
-Trend Pressure: {trend}
+Trend Strength: {trend:.2f}
+Z-Score: {z:.2f}
 
 ━━━━━━━━━━━━━━━━━━
-📈 MARKET BIAS
+📈 SIGNAL
 ━━━━━━━━━━━━━━━━━━
 
 {bias}
 
 ━━━━━━━━━━━━━━━━━━
-🧠 INTERPRETATION
+🧠 EDGE LOGIC
 ━━━━━━━━━━━━━━━━━━
 
-✔ Based on CFTC Disaggregated Data
-✔ Managed Money positioning
-✔ Weekly + multi-week momentum
+✔ Real net positioning
+✔ Momentum + trend
+✔ Extreme detection (Z-score)
 
 ━━━━━━━━━━━━━━━━━━
 """
 
-    return msg
-
-def main():
-    send(build_report())
+    send(msg)
 
 if __name__ == "__main__":
-    main()
+    run()
