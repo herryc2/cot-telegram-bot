@@ -26,8 +26,8 @@ from requests.adapters import HTTPAdapter, Retry
 # ──────────────────────────────────────────────
 # CONFIG  (values injected via environment vars / GitHub Secrets)
 # ──────────────────────────────────────────────
-TOKEN   = os.getenv("8898099074:AAG7DfuQuG7YmUl5KB-MFYeH5BqKEyJg4Wo", "")
-CHAT_ID = os.getenv("-1003835934177", "")
+TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN", "")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 CURRENT_YEAR = datetime.now(timezone.utc).year
 COT_URL = f"https://www.cftc.gov/dea/newcot/f_disagg_txt_{CURRENT_YEAR}.txt"
