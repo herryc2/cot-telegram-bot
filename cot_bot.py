@@ -1,39 +1,43 @@
 import requests
 import pandas as pd
-from datetime import datetime
 
 TOKEN = "YOUR_BOT_TOKEN"
 CHAT_ID = "-1003835934177"
 
-# CFTC data source (legacy COT file)
 URL = "https://www.cftc.gov/dea/newcot/f_disagg_txt_2024.txt"
 
-def send_telegram(message):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": CHAT_ID, "text": message})
+def send(msg):
+    requests.post(
+        f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+        data={"chat_id": CHAT_ID, "text": msg}
+    )
 
-def fetch_data():
-    df = pd.read_csv(URL, sep=",", low_memory=False)
-    return df
+def load_data():
+    # CFTC file is fixed-width, not CSV → we read raw
+    r = requests.get(URL)
+    lines = r.text.split("\n")
+    return lines
 
 def build_report():
-    # NOTE: simplified structure (we refine later after first run)
+    lines = load_data()
 
-    report = f"""📊 Mental Pips Club - Weekly COT Report
+    # We are not fully parsing everything yet (next upgrade step)
+    report = f"""📊 Mental Pips Club - Weekly COT Bot
 
-⚠️ System Active (Pro Version)
+Status: ✅ Running
+Data Source: CFTC Disaggregated Report
 
-✔ Data pulled from CFTC
-✔ Processing market positioning
-
-Next step: refining asset mapping (Gold, EUR, JPY, etc.)
+Next Upgrade:
+- Gold / EUR / JPY extraction
+- Net positioning calculation
+- Bullish/Bearish scoring engine
 """
 
     return report
 
 def main():
     msg = build_report()
-    send_telegram(msg)
+    send(msg)
 
 if __name__ == "__main__":
     main()
