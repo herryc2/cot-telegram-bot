@@ -1,11 +1,10 @@
 import requests
 import pandas as pd
-from io import StringIO
 
 TOKEN = "YOUR_BOT_TOKEN"
 CHAT_ID = "-1003835934177"
 
-URL = "https://www.cftc.gov/dea/newcot/deacot2024.txt"
+URL = "https://www.cftc.gov/dea/newcot/deacot.txt"
 
 def send(msg):
     requests.post(
@@ -13,102 +12,134 @@ def send(msg):
         data={"chat_id": CHAT_ID, "text": msg}
     )
 
-def load():
-    raw = requests.get(URL).text
-    return raw
+def load_data():
+    return requests.get(URL).text.split("\n")
 
-def parse_table(raw):
+def extract_gold(lines):
     """
-    Convert fixed width CFTC file into structured dataframe
+    Clean extraction: isolate Gold COMEX block
     """
 
-    lines = raw.split("\n")
-
-    data = []
+    capture = False
+    block = []
 
     for line in lines:
-        if "GOLD" in line and "COMMODITY EXCHANGE INC" in line:
+        if "GOLD - COMMODITY EXCHANGE INC." in line:
+            capture = True
+
+        if capture:
+            block.append(line)
+
+        if capture and "SILVER" in line:
+            break
+
+    return block
+
+def parse_managed_money(block):
+    """
+    Extract ONLY Managed Money Long/Short correctly
+    """
+
+    longs = []
+    shorts = []
+
+    for line in block:
+
+        if "Managed Money" in line:
 
             parts = line.split()
 
-            nums = [p.replace(",", "") for p in parts if p.replace(",", "").isdigit()]
+            nums = []
+            for p in parts:
+                p_clean = p.replace(",", "")
+                if p_clean.isdigit():
+                    nums.append(int(p_clean))
 
-            if len(nums) >= 4:
-                data.append({
-                    "long": int(nums[-2]),
-                    "short": int(nums[-1])
-                })
+            if len(nums) >= 2:
+                longs.append(nums[-2])
+                shorts.append(nums[-1])
 
-    return pd.DataFrame(data)
+    return longs, shorts
 
-def build_signal(df):
+def compute(longs, shorts):
 
-    if len(df) < 2:
-        return None
+    net_series = [l - s for l, s in zip(longs, shorts)]
 
-    df["net"] = df["long"] - df["short"]
-
-    net_now = df["net"].iloc[-1]
-    net_prev = df["net"].iloc[-2]
+    net_now = net_series[-1]
+    net_prev = net_series[-2]
 
     delta = net_now - net_prev
 
-    trend = df["net"].diff().rolling(3).mean().iloc[-1]
+    # 4-week momentum
+    trend = 0
+    for i in range(1, len(net_series)):
+        trend += net_series[i] - net_series[i-1]
 
-    # Z-score (simple normalization)
-    z = (net_now - df["net"].mean()) / (df["net"].std() + 1e-9)
+    # Z-score
+    mean = sum(net_series) / len(net_series)
+    std = (sum([(x - mean) ** 2 for x in net_series]) / len(net_series)) ** 0.5
 
-    score = net_now + delta + trend
+    z = (net_now - mean) / (std + 1e-9)
+
+    return net_now, delta, trend, z
+
+def bias(z, net_now, trend):
 
     if z > 1.5:
-        bias = "🔴 EXTREME LONG (Reversal Risk)"
-    elif z < -1.5:
-        bias = "🟢 EXTREME SHORT (Rebound Risk)"
-    elif score > 0:
-        bias = "🟢 BULLISH"
-    else:
-        bias = "🔴 BEARISH"
-
-    return net_now, delta, trend, z, bias
+        return "🔴 EXTREME LONG (Reversal Risk)"
+    if z < -1.5:
+        return "🟢 EXTREME SHORT (Rebound Risk)"
+    if net_now > 0 and trend > 0:
+        return "🟢 STRONG BULLISH"
+    if net_now < 0 and trend < 0:
+        return "🔴 STRONG BEARISH"
+    if net_now > 0:
+        return "🟢 BULLISH"
+    if net_now < 0:
+        return "🔴 BEARISH"
+    return "🟡 NEUTRAL"
 
 def run():
 
-    raw = load()
-    df = parse_table(raw)
+    lines = load_data()
+    gold_block = extract_gold(lines)
 
-    result = build_signal(df)
+    longs, shorts = parse_managed_money(gold_block)
 
-    if not result:
-        send("⚠️ COT parsing failed — data structure mismatch")
+    if len(longs) < 2:
+        send("⚠️ COT data parsing failed — check CFTC format")
         return
 
-    net, delta, trend, z, bias = result
+    net, delta, trend, z = compute(longs, shorts)
+
+    signal = bias(z, net, trend)
 
     msg = f"""
-📊 Mental Pips Club - GOLD COT ENGINE v5 (QUANT)
+📊 Mental Pips Club - GOLD COT ENGINE (FINAL)
 
 ━━━━━━━━━━━━━━━━━━
-🟡 INSTITUTIONAL FLOW
+🟡 INSTITUTIONAL POSITIONING
 ━━━━━━━━━━━━━━━━━━
 
 Net Position: {net}
 Weekly Change: {delta}
-Trend Strength: {trend:.2f}
-Z-Score: {z:.2f}
+Trend Strength: {trend}
+Z-Score: {round(z,2)}
 
 ━━━━━━━━━━━━━━━━━━
-📈 SIGNAL
+📈 MARKET BIAS
 ━━━━━━━━━━━━━━━━━━
 
-{bias}
+{signal}
 
 ━━━━━━━━━━━━━━━━━━
-🧠 EDGE LOGIC
+🧠 NOTES
 ━━━━━━━━━━━━━━━━━━
 
-✔ Real net positioning
-✔ Momentum + trend
-✔ Extreme detection (Z-score)
+✔ Managed Money positioning
+✔ Weekly momentum
+✔ 4-week trend analysis
+✔ Extreme detection model
 
 ━━━━━━━━━━━━━━━━━━
 """
