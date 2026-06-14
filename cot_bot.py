@@ -1,5 +1,6 @@
 import requests
 import pandas as pd
+from io import StringIO
 
 TOKEN = "YOUR_BOT_TOKEN"
 CHAT_ID = "-1003835934177"
@@ -12,106 +13,120 @@ def send(msg):
         data={"chat_id": CHAT_ID, "text": msg}
     )
 
-def get_data():
-    text = requests.get(URL).text.split("\n")
-    return text
+def load_table():
+    raw = requests.get(URL).text
 
-def extract_gold_block(lines):
+    # Convert fixed-width style into readable dataframe attempt
+    lines = raw.split("\n")
+
+    return lines
+
+def extract_gold_data(lines):
     """
-    Extract only Gold COMEX section properly
+    Proper structured extraction:
+    We isolate COMEX GOLD section safely
     """
+
     capture = False
-    gold_block = []
+    block = []
 
     for line in lines:
+
         if "GOLD - COMMODITY EXCHANGE INC." in line:
             capture = True
 
         if capture:
-            gold_block.append(line)
+            block.append(line)
 
-        if capture and line.strip() == "":
+        if capture and "SILVER" in line:
             break
 
-    return gold_block
+    return block
 
-def parse_numbers(block):
+def parse_positions(block):
     """
-    Extract numeric values from structured CFTC lines
+    Extract Managed Money longs & shorts properly
     """
 
     longs = []
     shorts = []
 
     for line in block:
+
         if "Managed Money" in line:
+
+            # split safely
             parts = line.split()
 
-            nums = [p for p in parts if p.replace(",", "").isdigit()]
+            nums = []
+            for p in parts:
+                p_clean = p.replace(",", "")
+                if p_clean.isdigit():
+                    nums.append(int(p_clean))
 
+            # CFTC format: last numbers usually long/short
             if len(nums) >= 2:
-                longs.append(int(nums[-2].replace(",", "")))
-                shorts.append(int(nums[-1].replace(",", "")))
+                longs.append(nums[-2])
+                shorts.append(nums[-1])
 
     return longs, shorts
 
 def build_report():
 
-    lines = get_data()
-    gold_block = extract_gold_block(lines)
+    lines = load_table()
+    gold_block = extract_gold_data(lines)
 
-    longs, shorts = parse_numbers(gold_block)
+    longs, shorts = parse_positions(gold_block)
 
-    if not longs or not shorts:
-        return "⚠️ Data parsing failed — CFTC format may have changed"
+    if len(longs) < 2:
+        return "⚠️ Not enough data extracted — CFTC format mismatch"
 
-    net = longs[-1] - shorts[-1]
+    net_now = longs[-1] - shorts[-1]
+    net_prev = longs[-2] - shorts[-2]
 
-    delta = (net - (longs[-2] - shorts[-2])) if len(longs) > 1 else 0
+    delta = net_now - net_prev
 
-    # Trend strength
-    trend = sum([(longs[i] - shorts[i]) for i in range(len(longs))])
+    # Trend (last 4 weeks if available)
+    trend = 0
+    for i in range(1, len(longs)):
+        trend += (longs[i] - shorts[i]) - (longs[i-1] - shorts[i-1])
 
-    # Bias logic
-    score = net + delta + trend
+    score = net_now + delta + trend
 
-    if score > 100000:
-        bias = "🟢 STRONG BULLISH"
+    # Bias engine
+    if score > 150000:
+        bias = "🟢 STRONG BULLISH (Institutional Accumulation)"
     elif score > 0:
         bias = "🟢 BULLISH"
-    elif score < -100000:
-        bias = "🔴 STRONG BEARISH"
-    elif score < 0:
-        bias = "🔴 BEARISH"
+    elif score < -150000:
+        bias = "🔴 STRONG BEARISH (Institutional Distribution)"
     else:
-        bias = "🟡 NEUTRAL"
+        bias = "🟡 NEUTRAL / CHOP"
 
     msg = f"""
-📊 Mental Pips Club - GOLD COT ENGINE v3
+📊 Mental Pips Club - GOLD COT ENGINE v4
 
 ━━━━━━━━━━━━━━━━━━
-🟡 REAL INSTITUTIONAL FLOW
+🟡 INSTITUTIONAL POSITIONING (REAL)
 ━━━━━━━━━━━━━━━━━━
 
-Net Position: {net}
+Managed Money Net Now: {net_now}
 Weekly Change: {delta}
-Trend Score: {trend}
+Trend Pressure: {trend}
 
 ━━━━━━━━━━━━━━━━━━
-📈 BIAS RESULT
+📈 MARKET BIAS
 ━━━━━━━━━━━━━━━━━━
 
 {bias}
-
-Confidence Score: {min(100, abs(score)//10000)}
 
 ━━━━━━━━━━━━━━━━━━
 🧠 INTERPRETATION
 ━━━━━━━━━━━━━━━━━━
 
-- Based on Managed Money positioning
-- Includes weekly momentum
-- Includes multi-week trend pressure
+✔ Based on CFTC Disaggregated Data
+✔ Managed Money positioning
+✔ Weekly + multi-week momentum
 
 ━━━━━━━━━━━━━━━━━━
 """
