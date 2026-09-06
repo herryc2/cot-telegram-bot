@@ -14,6 +14,7 @@ import os
 import sys
 import logging
 import re
+from html import escape
 from typing import Optional
 from datetime import datetime
 import requests
@@ -52,7 +53,7 @@ def _make_session() -> requests.Session:
         total=4,
         backoff_factor=1.5,
         status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["GET", "POST"],
+        allowed_methods=["GET"],
     )
     adapter = HTTPAdapter(max_retries=retry)
     session.mount("https://", adapter)
@@ -78,14 +79,18 @@ def send(text: str, parse_mode: str = "HTML") -> bool:
     try:
         r = SESSION.post(url, json=payload, timeout=15)
         r.raise_for_status()
-        log.info("Telegram message sent successfully.")
+        response = r.json()
+        if not response.get("ok"):
+            log.error("Telegram API rejected the message: %s", response.get("description", "unknown error"))
+            return False
+        log.info("Telegram message sent successfully (message id: %s).", response["result"]["message_id"])
         return True
     except requests.RequestException as exc:
         log.error("Failed to send Telegram message: %s", exc)
         return False
 
 def send_error(context: str, exc: Optional[Exception] = None) -> None:
-    detail = f"\n<code>{exc}</code>" if exc else ""
+    detail = f"\n<code>{escape(str(exc))}</code>" if exc else ""
     send(f"⚠️ <b>COT Bot Error</b>\n{context}{detail}")
 
 # ──────────────────────────────────────────────
@@ -285,8 +290,6 @@ def draw_ratio_bar(long_val: int, short_val: int) -> str:
     ratio = long_val / total
     green_blocks = int(round(ratio * 10))
     red_blocks = 10 - green_blocks
-    bar = "🟩" * green_blocks + "redo_blocks"
-    # Replacing placeholder with emoji blocks:
     bar = "🟩" * green_blocks + "🟥" * red_blocks
     return f"{bar} {ratio * 100:.1f}% Long"
 
@@ -348,6 +351,10 @@ def build_message(p: dict, report_date: str) -> str:
 # ──────────────────────────────────────────────
 def run() -> None:
     log.info("=== COT Gold Bot starting ===")
+
+    if not TOKEN or not CHAT_ID:
+        log.error("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set.")
+        sys.exit(1)
 
     try:
         html = load_page()
