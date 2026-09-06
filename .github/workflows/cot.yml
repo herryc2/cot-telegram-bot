@@ -1,8 +1,6 @@
 name: Gold COT Report
 
 on:
-  push:
-    branches: [main]  # Temporary one-time production test trigger
   schedule:
     - cron: "17 22 * * 6"   # Every Saturday 22:17 UTC (Sunday 06:17 MYT)
   workflow_dispatch:         # Manual trigger from Actions tab
